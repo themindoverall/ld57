@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import rough from "roughjs";
 import type { RoughCanvas } from "roughjs/bin/canvas";
 import type { Options } from "roughjs/bin/core";
+import { Point } from "roughjs/bin/geometry";
 
 const SCREEN_WIDTH = 1280;
 const SCREEN_HEIGHT = 720;
@@ -9,6 +10,8 @@ const BLOCK_SIZE = 64;
 const GRID_WIDTH = 8;
 const MAX_BLOCKS = 4;
 const SOLVE_TIME = 30;
+const FALL_SPEED = 5;
+const BLOCK_ROW_BUFFER = 20;
 
 interface Controller {
   up: number;
@@ -131,15 +134,17 @@ function blockSetState(block: Block, state: BlockState) {
 
 
 function checkSolutions(state: GameState) {
-  let minY = Infinity;
-  let maxY = -Infinity;
-  for (const block of state.blocks) {
-    minY = Math.min(minY, block.pos.iy);
-    maxY = Math.max(maxY, block.pos.iy);
-  }
+  let minY = state.player.pos.iy - BLOCK_ROW_BUFFER;
+  let maxY = state.bottomRow;
+  // for (const block of state.blocks) {
+  //   maxY = Math.max(maxY, block.pos.iy);
+  // }
   const height = maxY - minY + 1;
   const blockmap: (Block | undefined)[] = Array.from({ length: GRID_WIDTH * height });
   for (const block of state.blocks) {
+    if (block.pos.iy < minY || block.pos.iy > maxY) {
+      continue;
+    }
     blockmap[(block.pos.iy - minY) * GRID_WIDTH + block.pos.ix] = block;
   }
   const solvedBlocks: Set<Block> = new Set();
@@ -256,6 +261,7 @@ function onGround(state: GameState, player: Player) {
 
 function playerUpdate(state: GameState, player: Player, controller: Controller) {
   switch (player.state) {
+    // #region ground
     case "ground": {
       let movementX = 0;
       if (controller.left > 0) {
@@ -283,6 +289,8 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
       }
       break;
     }
+    // #endregion ground
+    // #region jumping
     case "jumping": {
       let movementX = 0;
       if (controller.left > 0) {
@@ -291,7 +299,19 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
       if (controller.right > 0) {
         movementX += player.speed;
       }
+
+      if (controller.b === 1) {
+        const block = player.blocks.shift();
+        if (block) {
+          setPosition((Math.floor(player.pos.x / BLOCK_SIZE) + 0.5) * BLOCK_SIZE, player.pos.y, block.pos);
+          blockSetState(block, "falling");
+          playerSetState(player, "jumping");
+          return;
+        }
+      }
+
       playerMoveAndCollide(state, player.pos, player.width, player.height, movementX, 0);
+
       if (!playerMoveAndCollide(state, player.pos, player.width, player.height, 0, -5 * (player.jumpTime / 30))) {
         playerSetState(player, "falling");
       }
@@ -302,6 +322,8 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
       }
       break;
     }
+    // #endregion jumping
+    // #region falling
     case "falling": {
       let movementX = 0;
       if (controller.left > 0) {
@@ -327,12 +349,17 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
       }
       player.jumpTime--;
 
+      let fallMultiplier = 1;
+      if (controller.down > 0) {
+        fallMultiplier = 2;
+      }
+
       if (!playerMoveAndCollide(state, player.pos, player.width, player.height, movementX, 0)) {
         player.wallriding = movementX;
         playerSetState(player, "wallride");
         return;
       }
-      if (!playerMoveAndCollide(state, player.pos, player.width, player.height, 0, 3)) {
+      if (!playerMoveAndCollide(state, player.pos, player.width, player.height, 0, FALL_SPEED * fallMultiplier)) {
         playerSetState(player, "ground");
       }
       if (onGround(state, player)) {
@@ -340,6 +367,8 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
       }
       break;
     }
+    // #endregion falling
+    // #region wallride
     case "wallride": {
       let movementX = 0;
       if (controller.left > 0) {
@@ -357,7 +386,7 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
         playerSetState(player, "falling");
         return;
       }
-      
+
       if (controller.up === 1) {
         player.wallriding = (player.wallriding || 0) * -1;
         playerSetState(player, "walljumping");
@@ -372,6 +401,8 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
       }
       break;
     }
+    // #endregion wallride
+    // #region walljumping
     case "walljumping": {
       if (!playerMoveAndCollide(state, player.pos, player.width, player.height, player.wallriding || 0, 0)) {
         player.wallriding = -(player.wallriding || 0);
@@ -389,6 +420,7 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
       }
       break;
     }
+    // #endregion walljumping
   }
 }
 
@@ -442,6 +474,7 @@ interface GameState {
   };
   blocks: Array<Block>;
   nextBlockId: number;
+  bottomRow: number;
 }
 
 function initialState(): GameState {
@@ -473,6 +506,7 @@ function initialState(): GameState {
     },
     blocks: [],
     nextBlockId: 0,
+    bottomRow: 0,
   };
 }
 
@@ -495,8 +529,17 @@ function createBlock(state: GameState, ix: number, iy: number, color: BlockColor
   return block;
 }
 
+function createBlockRow(state: GameState) {
+  const row = ++state.bottomRow;
+  for (let i = 0; i < GRID_WIDTH; i++) {
+    if (Math.random() < 0.7) {
+      createBlock(state, i, row, randomBlockColor());
+    }
+  }
+}
+
 function randomBlockColor(): BlockColor {
-  return blockColors[Math.floor(Math.random() * blockColors.length)];
+  return blockColors[Math.floor(Math.random() * (3))];
 }
 
 export function App() {
@@ -511,13 +554,13 @@ export function App() {
     const gamepads: Map<number, Gamepad> = new Map();
 
     canvas.style.backgroundColor = "#e0efff";
-    canvas.width = canvas.clientWidth;
-    canvas.height = canvas.clientHeight;
+    canvas.width = canvas.clientWidth * window.devicePixelRatio;
+    canvas.height = canvas.clientHeight * window.devicePixelRatio;
 
     const rctx = rough.canvas(canvas);
     const onWindowResize = () => {
-      canvas.width = canvas.clientWidth;
-      canvas.height = canvas.clientHeight;
+      canvas.width = canvas.clientWidth * window.devicePixelRatio;
+      canvas.height = canvas.clientHeight * window.devicePixelRatio;
     };
 
     const onGamepadConnected = (e: GamepadEvent) => {
@@ -587,18 +630,14 @@ export function App() {
     window.addEventListener("resize", onWindowResize);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
-    
+
     let time = 0;
     let seed = 0;
     let fontsReady = false;
     const state = initialState();
 
-    for (let j = 0; j < 20; j++) {
-      for (let i = 0; i < GRID_WIDTH; i++) {
-        if (Math.random() < 0.5) {
-          createBlock(state, i, j, randomBlockColor());
-        }
-      }
+    for (let j = 0; j < BLOCK_ROW_BUFFER; j++) {
+      createBlockRow(state);
     }
 
     const step = () => {
@@ -608,6 +647,10 @@ export function App() {
       }
       checkSolutions(state);
       setPosition(state.camera.pos.x, state.player.pos.y, state.camera.pos);
+
+      while (state.player.pos.iy + BLOCK_ROW_BUFFER > state.bottomRow) {
+        createBlockRow(state);
+      }
 
       if (controller.up > 0) controller.up += 1;
       if (controller.down > 0) controller.down += 1;
@@ -688,7 +731,7 @@ export function App() {
       ctx.lineWidth = hairline;
       const top = Math.floor((state.camera.pos.y - SCREEN_HEIGHT / 2) / BLOCK_SIZE);
       const bottom = Math.floor((state.camera.pos.y + SCREEN_HEIGHT / 2) / BLOCK_SIZE) + 1;
-      
+
       for (let i = 0; i <= GRID_WIDTH; i += 1) {
         ctx.moveTo(i * BLOCK_SIZE, top * BLOCK_SIZE);
         ctx.lineTo(i * BLOCK_SIZE, bottom * BLOCK_SIZE);
@@ -729,6 +772,7 @@ export function App() {
       }
 
       drawCapsule(rctx, state.player.pos.x - state.player.width / 2, state.player.pos.y - state.player.height, state.player.width, state.player.height, { seed, fill: "#C058F8", fillWeight: 5, hachureGap: 6, stroke: "#8131AC", strokeWidth: 3, roughness: 1 })
+
       ctx.restore();
       // UI viewport
 
@@ -781,6 +825,17 @@ function drawCapsule(rctx: RoughCanvas, x: number, y: number, width: number, hei
   const radius = width / 2;
   const capsulePath = `M ${x} ${y + radius} A ${radius} ${radius} 0 1 1 ${x + width} ${y + radius} L ${x + width} ${y + height - radius} A ${radius} ${radius} 0 1 1 ${x} ${y + height - radius} L ${x} ${y + radius}`;
   rctx.path(capsulePath, options);
+}
+
+function drawStar(rctx: RoughCanvas, x: number, y: number, innerRadius: number, outerRadius: number, pointCount: number, options: Options) {
+  const radiansPerPoint = Math.PI * 2 / pointCount;
+  const points: Point[] = [];
+  for (let i = 0; i < pointCount; i++) {
+    const angle = i * radiansPerPoint;
+    points.push([x + Math.cos(angle - radiansPerPoint / 2) * innerRadius, y + Math.sin(angle - radiansPerPoint / 2) * innerRadius]);
+    points.push([x + Math.cos(angle) * outerRadius, y + Math.sin(angle) * outerRadius]);
+  }
+  rctx.polygon(points, options);
 }
 
 export default App;
