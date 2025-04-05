@@ -1,4 +1,10 @@
-# bun-react-tailwind-template
+# LD57
+
+## Overview
+
+It's a puzzle platformer with DEPTH!
+
+## How to run the game
 
 To install dependencies:
 
