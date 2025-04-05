@@ -508,6 +508,8 @@ export function App() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    const gamepads: Map<number, Gamepad> = new Map();
+
     canvas.style.backgroundColor = "#e0efff";
     canvas.width = canvas.clientWidth;
     canvas.height = canvas.clientHeight;
@@ -517,6 +519,15 @@ export function App() {
       canvas.width = canvas.clientWidth;
       canvas.height = canvas.clientHeight;
     };
+
+    const onGamepadConnected = (e: GamepadEvent) => {
+      gamepads.set(e.gamepad.index, e.gamepad);
+    };
+    const onGamepadDisconnected = (e: GamepadEvent) => {
+      gamepads.delete(e.gamepad.index);
+    };
+    window.addEventListener("gamepadconnected", onGamepadConnected);
+    window.addEventListener("gamepaddisconnected", onGamepadDisconnected);
 
     const controller: Controller = {
       up: 0,
@@ -606,6 +617,15 @@ export function App() {
       if (controller.b > 0) controller.b += 1;
     };
 
+    let gamepadState = {
+      up: false,
+      down: false,
+      left: false,
+      right: false,
+      a: false,
+      b: false,
+    };
+
     let shouldQuit = false;
     let timeAcc = 0;
     const STEP = 1000 / 60;
@@ -613,6 +633,39 @@ export function App() {
       const dt = t - time;
       time = t;
       timeAcc += dt;
+
+      const newGamepadState = {
+        up: false,
+        down: false,
+        left: false,
+        right: false,
+        a: false,
+        b: false,
+      };
+      for (const gamepad of navigator.getGamepads()) {
+        if (gamepad) {
+          for (let i = 0; i < gamepad.buttons.length; i++) {
+            const button = gamepad.buttons[i];
+            if (button.pressed) {
+              console.log(i, button, "pressed");
+            }
+          }
+          newGamepadState.up ||= gamepad.buttons[12].pressed || gamepad.buttons[3].pressed;
+          newGamepadState.down ||= gamepad.buttons[13].pressed;
+          newGamepadState.left ||= gamepad.buttons[14].pressed;
+          newGamepadState.right ||= gamepad.buttons[15].pressed;
+          newGamepadState.a ||= gamepad.buttons[0].pressed;
+          newGamepadState.b ||= gamepad.buttons[1].pressed;
+        }
+      }
+
+      for (const [key, value] of Object.entries(newGamepadState)) {
+        if (value !== gamepadState[key as keyof typeof newGamepadState]) {
+          controller[key as keyof Controller] = value ? 1 : 0;
+        }
+      }
+
+      gamepadState = newGamepadState;
 
       while (timeAcc > STEP) {
         timeAcc -= STEP;
@@ -704,6 +757,8 @@ export function App() {
       window.removeEventListener("resize", onWindowResize);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("gamepadconnected", onGamepadConnected);
+      window.removeEventListener("gamepaddisconnected", onGamepadDisconnected);
       shouldQuit = true;
     };
   }, []);
