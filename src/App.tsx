@@ -671,6 +671,7 @@ function clamp01(x: number): number {
 interface GameState {
   time: number;
   seed: number;
+  mode: "intro" | "playing" | "gameover";
   player: Player;
   camera: {
     pos: Position;
@@ -680,12 +681,14 @@ interface GameState {
   bottomRow: number;
   finishLineRow: number;
   debug: boolean;
+  score: number;
 }
 
 function initialState(): GameState {
   return {
     time: 0,
     seed: 0,
+    mode: "intro",
     player: {
       pos: {
         x: 3.5 * BLOCK_SIZE,
@@ -714,6 +717,7 @@ function initialState(): GameState {
     bottomRow: 5,
     finishLineRow: 32,
     debug: false,
+    score: 0,
   };
 }
 
@@ -758,6 +762,198 @@ function randomBlockColor(): BlockColor {
 }
 
 // #endregion state
+
+// #region modes
+
+function updateIntro(state: GameState, controller: Controller) {
+  state.camera.pos.y += 1;
+
+  if (controller.a > 0) {
+    state.mode = "playing";
+    state.time = 0;
+    state.camera.pos.y = 0;
+  }
+}
+
+function updatePlaying(state: GameState, controller: Controller) {
+  playerUpdate(state, state.player, controller);
+  for (const block of state.blocks) {
+    blockUpdate(state, block);
+  }
+  checkSolutions(state);
+  setPosition(state.camera.pos.x, state.player.pos.y, state.camera.pos);
+
+  while (state.player.pos.iy + BLOCK_ROW_BUFFER > state.bottomRow) {
+    createBlockRow(state);
+  }
+
+  // sort blocks by y position descending
+  state.blocks.sort((a, b) => b.pos.iy - a.pos.iy);
+}
+
+function updateGameOver(state: GameState, controller: Controller) {
+  
+}
+
+function updateMode(state: GameState, controller: Controller) {
+  switch (state.mode) {
+    case "intro":
+      updateIntro(state, controller);
+      break;
+    case "playing":
+      updatePlaying(state, controller);
+      break;
+    case "gameover":
+      updateGameOver(state, controller);
+      break;
+  }
+}
+
+function setCameraViewport(ctx: CanvasRenderingContext2D, state: GameState) {
+  ctx.translate(SCREEN_WIDTH / 2 - state.camera.pos.x, SCREEN_HEIGHT / 2 - state.camera.pos.y);
+}
+
+function drawGridLines(ctx: CanvasRenderingContext2D, state: GameState) {
+  // Draw grid lines
+  ctx.beginPath();
+  ctx.strokeStyle = "#92CBFA";
+  ctx.lineWidth = 1;
+  const top = Math.floor((state.camera.pos.y - SCREEN_HEIGHT / 2) / BLOCK_SIZE);
+  const bottom = Math.floor((state.camera.pos.y + SCREEN_HEIGHT / 2) / BLOCK_SIZE) + 1;
+
+  for (let i = 0; i <= GRID_WIDTH; i += 1) {
+    ctx.moveTo(i * BLOCK_SIZE, top * BLOCK_SIZE);
+    ctx.lineTo(i * BLOCK_SIZE, bottom * BLOCK_SIZE);
+  }
+  for (let j = top; j <= bottom; j += 1) {
+    ctx.moveTo(0, j * BLOCK_SIZE);
+    ctx.lineTo(GRID_WIDTH * BLOCK_SIZE, j * BLOCK_SIZE);
+  }
+  ctx.stroke();
+}
+
+
+function drawCenteredTextLine(ctx: CanvasRenderingContext2D, text: string, y: number) {
+  const measurements = ctx.measureText(text);
+  ctx.fillText(text, SCREEN_WIDTH / 2 - measurements.width / 2, y);
+  y += measurements.fontBoundingBoxAscent + 10;
+  return y;
+}
+
+function drawIntro(ctx: CanvasRenderingContext2D, rctx: RoughCanvas, state: GameState, seed: number) {
+  ctx.save();
+  setCameraViewport(ctx, state);
+  drawGridLines(ctx, state);
+  ctx.restore();
+
+  ctx.font = "48px Indie Flower";
+  let y = 100;
+  // ctx.fillText(`state=${state.player.state} up=${controller.up} down=${controller.down} left=${controller.left} right=${controller.right} a=${controller.a} b=${controller.b}`, 10, 30);
+  y = drawCenteredTextLine(ctx, "LD57 Depths", y);
+  y += 20;
+
+  ctx.font = "24px Indie Flower";
+  const controls = "Keyboard Controls:\nWASD - Move/Jump\nJ - Lift Block\nK - Drop Block\n\nGamepad Controls:\nD-Pad - Move/Jump\nA - Lift Block\nB - Drop Block\nY - Jump";
+  for (const line of controls.split("\n")) {
+    y = drawCenteredTextLine(ctx, line, y);
+  }
+}
+
+function drawPlaying(ctx: CanvasRenderingContext2D, rctx: RoughCanvas, state: GameState, seed: number) {
+  ctx.save();
+  setCameraViewport(ctx, state);
+
+  drawGridLines(ctx, state);
+
+  // Draw blocks
+  for (const block of state.blocks) {
+    const colorStr = blockColorString(block.color);
+    const visualRect = blockVisualRectangle(block);
+    const blockStyle: Options = {
+      seed,
+      fill: colorStr,
+      fillStyle: "cross-hatch",
+      fillWeight: 1,
+      hachureGap: 5,
+      stroke: colorStr
+    };
+    if (block.state === "lifted") {
+      blockStyle.fillStyle = "hachure";
+      blockStyle.fillWeight = 1;
+      blockStyle.hachureGap = 4;
+    }
+    if (block.state === "solving") {
+      blockStyle.fillStyle = "dots";
+      blockStyle.fillWeight = 2;
+      blockStyle.hachureGap = 6;
+      blockStyle.stroke = "none";
+    } else if (block.state === "thrown") {
+      blockStyle.fillStyle = "hachure";
+      blockStyle.fillWeight = 1;
+      blockStyle.hachureGap = 4;
+    } else if (block.state === "idle") {
+      blockStyle.seed = 1;
+      blockStyle.fillStyle = "hachure";
+      blockStyle.fillWeight = 1;
+      blockStyle.hachureGap = 4;
+    }
+    rctx.rectangle(visualRect.x, visualRect.y, visualRect.width, visualRect.height, blockStyle);
+    if (block.star) {
+      drawStar(rctx, visualRect.x + visualRect.width / 2, visualRect.y + visualRect.height / 2, visualRect.width / 5, visualRect.height / 3, 5, { seed, fill: "#FFEFb0", fillStyle: "solid", stroke: "#FFD700", strokeWidth: 3, roughness: 1 });
+    }
+  }
+
+  drawCapsule(rctx, state.player.pos.x - state.player.width / 2, state.player.pos.y - state.player.height, state.player.width, state.player.height, { seed, fill: "#C058F8", fillWeight: 5, hachureGap: 6, stroke: "#8131AC", strokeWidth: 3, roughness: 1 })
+
+  if (state.debug) {
+    // draw collision rectangles
+    for (const block of state.blocks) {
+      const blockRect = blockRectangle(block);
+      ctx.beginPath();
+      ctx.rect(blockRect.x, blockRect.y, blockRect.width, blockRect.height);
+      ctx.strokeStyle = "#0f0";
+      ctx.stroke();
+      ctx.fillText(`${block.state} (${block.pos.ix}, ${block.pos.iy})`, blockRect.x, blockRect.y);
+    }
+
+    {
+      ctx.beginPath();
+      const playerRect = playerRectangle(state.player);
+      ctx.rect(playerRect.x, playerRect.y, playerRect.width, playerRect.height);
+      ctx.strokeStyle = "#00f";
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+  // UI viewport
+
+    // ctx.font = "48px Indie Flower";
+    // ctx.fillStyle = "#000";
+    // ctx.fillText("Hello World", 640, 360);
+
+    // ctx.font = "30px Indie Flower";
+    // ctx.fillText(`state=${state.player.state} up=${controller.up} down=${controller.down} left=${controller.left} right=${controller.right} a=${controller.a} b=${controller.b}`, 10, 30);
+}
+
+function drawGameOver(ctx: CanvasRenderingContext2D, rctx: RoughCanvas, state: GameState, seed: number) {
+
+}
+
+function drawMode(ctx: CanvasRenderingContext2D, rctx: RoughCanvas, state: GameState, seed: number) {
+  switch (state.mode) {
+    case "intro":
+      drawIntro(ctx, rctx, state, seed);
+      break;
+    case "playing":
+      drawPlaying(ctx, rctx, state, seed);
+      break;
+    case "gameover":
+      drawGameOver(ctx, rctx, state, seed);
+      break;
+  }
+}
+
+// #endregion modes
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -858,19 +1054,7 @@ export function App() {
     }
 
     const step = () => {
-      playerUpdate(state, state.player, controller);
-      for (const block of state.blocks) {
-        blockUpdate(state, block);
-      }
-      checkSolutions(state);
-      setPosition(state.camera.pos.x, state.player.pos.y, state.camera.pos);
-
-      while (state.player.pos.iy + BLOCK_ROW_BUFFER > state.bottomRow) {
-        createBlockRow(state);
-      }
-
-      // sort blocks by y position descending
-      state.blocks.sort((a, b) => b.pos.iy - a.pos.iy);
+      updateMode(state, controller);
 
       if (controller.up > 0) controller.up += 1;
       if (controller.down > 0) controller.down += 1;
@@ -938,100 +1122,10 @@ export function App() {
       seed = Math.floor(time * 0.01);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.save();
-      const hairline = SCREEN_WIDTH / canvas.width;
       ctx.scale(canvas.width / SCREEN_WIDTH, canvas.height / SCREEN_HEIGHT);
 
-      // Camera viewport
-      ctx.save();
-      ctx.translate(SCREEN_WIDTH / 2 - state.camera.pos.x, SCREEN_HEIGHT / 2 - state.camera.pos.y);
+      drawMode(ctx, rctx, state, seed);
 
-      // Draw grid lines
-      ctx.beginPath();
-      ctx.strokeStyle = "#92CBFA";
-      ctx.lineWidth = hairline;
-      const top = Math.floor((state.camera.pos.y - SCREEN_HEIGHT / 2) / BLOCK_SIZE);
-      const bottom = Math.floor((state.camera.pos.y + SCREEN_HEIGHT / 2) / BLOCK_SIZE) + 1;
-
-      for (let i = 0; i <= GRID_WIDTH; i += 1) {
-        ctx.moveTo(i * BLOCK_SIZE, top * BLOCK_SIZE);
-        ctx.lineTo(i * BLOCK_SIZE, bottom * BLOCK_SIZE);
-      }
-      for (let j = top; j <= bottom; j += 1) {
-        ctx.moveTo(0, j * BLOCK_SIZE);
-        ctx.lineTo(GRID_WIDTH * BLOCK_SIZE, j * BLOCK_SIZE);
-      }
-      ctx.stroke();
-
-      // Draw blocks
-      for (const block of state.blocks) {
-        const colorStr = blockColorString(block.color);
-        const visualRect = blockVisualRectangle(block);
-        const blockStyle: Options = {
-          seed,
-          fill: colorStr,
-          fillStyle: "cross-hatch",
-          fillWeight: 1,
-          hachureGap: 5,
-          stroke: colorStr
-        };
-        if (block.state === "lifted") {
-          blockStyle.fillStyle = "hachure";
-          blockStyle.fillWeight = 1;
-          blockStyle.hachureGap = 4;
-        }
-        if (block.state === "solving") {
-          blockStyle.fillStyle = "dots";
-          blockStyle.fillWeight = 2;
-          blockStyle.hachureGap = 6;
-          blockStyle.stroke = "none";
-        } else if (block.state === "thrown") {
-          blockStyle.fillStyle = "hachure";
-          blockStyle.fillWeight = 1;
-          blockStyle.hachureGap = 4;
-        } else if (block.state === "idle") {
-          blockStyle.seed = 1;
-          blockStyle.fillStyle = "hachure";
-          blockStyle.fillWeight = 1;
-          blockStyle.hachureGap = 4;
-        }
-        rctx.rectangle(visualRect.x, visualRect.y, visualRect.width, visualRect.height, blockStyle);
-        if (block.star) {
-          drawStar(rctx, visualRect.x + visualRect.width / 2, visualRect.y + visualRect.height / 2, visualRect.width / 5, visualRect.height / 3, 5, { seed, fill: "#FFEFb0", fillStyle: "solid", stroke: "#FFD700", strokeWidth: 3, roughness: 1 });
-        }
-      }
-
-      drawCapsule(rctx, state.player.pos.x - state.player.width / 2, state.player.pos.y - state.player.height, state.player.width, state.player.height, { seed, fill: "#C058F8", fillWeight: 5, hachureGap: 6, stroke: "#8131AC", strokeWidth: 3, roughness: 1 })
-
-      if (state.debug) {
-        // draw collision rectangles
-        for (const block of state.blocks) {
-          const blockRect = blockRectangle(block);
-          ctx.beginPath();
-          ctx.rect(blockRect.x, blockRect.y, blockRect.width, blockRect.height);
-          ctx.strokeStyle = "#0f0";
-          ctx.stroke();
-          ctx.fillText(`${block.state} (${block.pos.ix}, ${block.pos.iy})`, blockRect.x, blockRect.y);
-        }
-
-        {
-          ctx.beginPath();
-          const playerRect = playerRectangle(state.player);
-          ctx.rect(playerRect.x, playerRect.y, playerRect.width, playerRect.height);
-          ctx.strokeStyle = "#00f";
-          ctx.stroke();
-        }
-      }
-      ctx.restore();
-      // UI viewport
-
-      if (fontsReady) {
-        // ctx.font = "48px Indie Flower";
-        // ctx.fillStyle = "#000";
-        // ctx.fillText("Hello World", 640, 360);
-
-        ctx.font = "30px Indie Flower";
-        ctx.fillText(`state=${state.player.state} up=${controller.up} down=${controller.down} left=${controller.left} right=${controller.right} a=${controller.a} b=${controller.b}`, 10, 30);
-      }
       ctx.restore();
       if (!shouldQuit) {
         requestAnimationFrame(draw);
