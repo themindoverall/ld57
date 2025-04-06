@@ -16,6 +16,7 @@ const BLOCK_ROW_BUFFER = 20;
 const JUMP_TIME = 30;
 const WALLJUMP_TIME = 30;
 const FLOATING_TIME = 30;
+const THROW_SPEED = 8;
 
 interface Controller {
   up: number;
@@ -42,6 +43,16 @@ interface Rectangle {
 
 // #region blocks
 
+interface Block {
+  id: number;
+  pos: Position;
+  color: BlockColor;
+  state: BlockState;
+  timer: number;
+  star: boolean;
+  tweenRect?: Rectangle;
+}
+
 const blockColors = ["red", "green", "blue", "yellow"] as const;
 type BlockColor = typeof blockColors[number];
 
@@ -58,7 +69,7 @@ function blockColorString(color: BlockColor) {
   }
 }
 
-const blockStates = ["idle", "lifted", "ground", "falling", "solving"] as const;
+const blockStates = ["idle", "lifted", "thrown", "ground", "falling", "solving"] as const;
 type BlockState = typeof blockStates[number];
 
 function blockIsPickable(block: Block): boolean {
@@ -66,7 +77,7 @@ function blockIsPickable(block: Block): boolean {
 }
 
 function blockIsSolvable(block: Block): boolean {
-  return block.state === "idle" || block.state === "ground";
+  return block.state === "idle" || block.state === "ground" || block.state === "solving";
 }
 
 function blocksMatch(block1: Block, block2: Block): boolean {
@@ -83,6 +94,39 @@ function blockRectangle(block: Block): Rectangle {
     width: BLOCK_SIZE,
     height: BLOCK_SIZE
   };
+}
+
+function blockVisualRectangle(block: Block): Rectangle {
+  const targetRect: Rectangle = {
+    x: block.pos.x - BLOCK_SIZE * 0.5,
+    y: block.pos.y - BLOCK_SIZE,
+    width: BLOCK_SIZE,
+    height: BLOCK_SIZE
+  };
+
+  let tweenTime = 0;
+  if (block.state === "lifted") {
+    targetRect.width *= 0.5;
+    targetRect.height *= 0.5;
+    targetRect.x = block.pos.x - targetRect.width * 0.5;
+    targetRect.y = block.pos.y - targetRect.height;
+    tweenTime = 10;
+  }
+  if (block.state === "thrown") {
+    targetRect.width *= 0.25;
+    targetRect.x = block.pos.x - targetRect.width * 0.5;
+    targetRect.y = block.pos.y - targetRect.height;
+    tweenTime = 10;
+  }
+
+  if (tweenTime > 0 && block.tweenRect) {
+    targetRect.x = lerp(block.tweenRect.x, targetRect.x, clamp01(block.timer / tweenTime));
+    targetRect.y = lerp(block.tweenRect.y, targetRect.y, clamp01(block.timer / tweenTime));
+    targetRect.width = lerp(block.tweenRect.width, targetRect.width, clamp01(block.timer / tweenTime));
+    targetRect.height = lerp(block.tweenRect.height, targetRect.height, clamp01(block.timer / tweenTime));
+  }
+
+  return targetRect;
 }
 
 function blockMoveAndCollide(state: GameState, block: Block, movementX: number, movementY: number) {
@@ -125,7 +169,28 @@ function blockMoveAndCollide(state: GameState, block: Block, movementX: number, 
   return true;
 }
 
+function blockSettle(state: GameState, block: Block) {
+  // make sure we're iy-1 of the block we're sitting on
+  const pickRect: Rectangle = {
+    x: block.pos.x,
+    y: block.pos.y,
+    width: BLOCK_SIZE,
+    height: 4
+  }
+  const nextBlock = state.blocks.find(b => b.id !== block.id && checkAABB(pickRect, blockRectangle(b)));
+  if (nextBlock) {
+    block.pos = {
+      x: block.pos.x,
+      y: nextBlock.pos.y - BLOCK_SIZE,
+      ix: block.pos.ix,
+      iy: nextBlock.pos.iy - 1
+    }
+  }
+  blockSetState(block, "ground");
+}
+
 function blockUpdate(state: GameState, block: Block) {
+  block.timer += 1;
   switch (block.state) {
     case "idle": {
       break;
@@ -136,21 +201,29 @@ function blockUpdate(state: GameState, block: Block) {
       setPosition(player.pos.x, player.pos.y - player.height - (index * BLOCK_SIZE * 0.5), block.pos);
       break;
     }
+    case "thrown": {
+      if (!blockMoveAndCollide(state, block, 0, THROW_SPEED)) {
+        if (checkAABB(blockRectangle(block), playerRectangle(state.player))) {
+          playerSetState(state.player, "floating");
+        }
+        blockSettle(state, block);
+      }
+      break;
+    }
     case "ground": {
-      if (blockMoveAndCollide(state, block, 0, 3)) {
+      if (blockMoveAndCollide(state, block, 0, FALL_SPEED)) {
         blockSetState(block, "falling");
       }
       break;
     }
     case "falling": {
-      if (!blockMoveAndCollide(state, block, 0, 3)) {
-        blockSetState(block, "ground");
+      if (!blockMoveAndCollide(state, block, 0, FALL_SPEED)) {
+        blockSettle(state, block);
       }
       break;
     }
     case "solving": {
-      block.timer -= 1;
-      if (block.timer <= 0) {
+      if (block.timer >= SOLVE_TIME) {
         state.blocks.splice(state.blocks.indexOf(block), 1);
         return;
       }
@@ -160,13 +233,13 @@ function blockUpdate(state: GameState, block: Block) {
 }
 
 function blockSetState(block: Block, state: BlockState) {
-  block.state = state;
-  switch (state) {
-    case "solving": {
-      block.timer = 30;
-      break;
-    }
+  if (block.state === state) {
+    return;
   }
+  // capture the tweenRect before we switch the state
+  block.tweenRect = blockVisualRectangle(block);
+  block.state = state;
+  block.timer = 0;
 }
 
 
@@ -202,7 +275,7 @@ function checkSolutions(state: GameState) {
         streak.push(nextBlock);
       }
       if (streak.length >= 3) {
-        if (streak.find(block => block.state === "ground")) {
+        if (streak.find(block => block.state === "ground" || block.state === "solving")) {
           streaks.push(streak);
           streak.forEach(block => solvedBlocks.add(block));
         }
@@ -217,7 +290,7 @@ function checkSolutions(state: GameState) {
         streak.push(nextBlock);
       }
       if (streak.length >= 3) {
-        if (streak.find(block => block.state === "ground")) {
+        if (streak.find(block => block.state === "ground" || block.state === "solving")) {
           streaks.push(streak);
           streak.forEach(block => solvedBlocks.add(block));
         }
@@ -225,15 +298,6 @@ function checkSolutions(state: GameState) {
     }
   }
   solvedBlocks.forEach(block => blockSetState(block, "solving"));
-}
-
-
-interface Block {
-  id: number;
-  pos: Position;
-  color: BlockColor;
-  state: BlockState;
-  timer: number;
 }
 
 // #endregion block
@@ -350,12 +414,28 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
   switch (player.state) {
     // #region ground
     case "ground": {
+      const inBlock = collideBlock(state, playerRectangle(player));
+      if (inBlock && inBlock.state === "ground") {
+        playerSetState(player, "floating");
+        return;
+      }
+
       let movementX = 0;
       if (controller.left > 0) {
         movementX -= player.speed;
       }
       if (controller.right > 0) {
         movementX += player.speed;
+      }
+
+      if (controller.b === 1) {
+        const block = player.blocks.shift();
+        if (block) {
+          setPosition((Math.floor(player.pos.x / BLOCK_SIZE) + 0.5) * BLOCK_SIZE, player.pos.y, block.pos);
+          blockSetState(block, "thrown");
+          playerSetState(player, "jumping");
+          return;
+        }
       }
 
       if (playerMoveAndCollide(state, player, 0, FALL_SPEED)) {
@@ -402,8 +482,8 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
         const block = player.blocks.shift();
         if (block) {
           setPosition((Math.floor(player.pos.x / BLOCK_SIZE) + 0.5) * BLOCK_SIZE, player.pos.y, block.pos);
-          blockSetState(block, "falling");
-          playerSetState(player, "floating");
+          blockSetState(block, "thrown");
+          playerSetState(player, "jumping");
           return;
         }
       }
@@ -441,7 +521,7 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
         const block = player.blocks.shift();
         if (block) {
           setPosition((Math.floor(player.pos.x / BLOCK_SIZE) + 0.5) * BLOCK_SIZE, player.pos.y, block.pos);
-          blockSetState(block, "falling");
+          blockSetState(block, "thrown");
           playerSetState(player, "jumping");
           return;
         }
@@ -541,14 +621,6 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
   }
 }
 
-function pickBlock(state: GameState, pos: Position): Block | true | null {
-  if (pos.ix < 0 || pos.ix >= GRID_WIDTH) {
-    return true;
-  }
-
-  return state.blocks.find(block => block.pos.ix === pos.ix && block.pos.iy === pos.iy && blockIsPickable(block)) || null;
-}
-
 function playerSetState(player: Player, state: PlayerState) {
   if (player.state === "ground" && state === "falling") {
     // acme jump
@@ -584,6 +656,18 @@ interface Player {
   blocks: Array<Block>;
 }
 
+// #endregion player
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function clamp01(x: number): number {
+  return Math.max(0, Math.min(1, x));
+}
+
+// #region state
+
 interface GameState {
   time: number;
   seed: number;
@@ -594,6 +678,8 @@ interface GameState {
   blocks: Array<Block>;
   nextBlockId: number;
   bottomRow: number;
+  finishLineRow: number;
+  debug: boolean;
 }
 
 function initialState(): GameState {
@@ -625,7 +711,9 @@ function initialState(): GameState {
     },
     blocks: [],
     nextBlockId: 0,
-    bottomRow: 0,
+    bottomRow: 5,
+    finishLineRow: 32,
+    debug: false,
   };
 }
 
@@ -643,6 +731,7 @@ function createBlock(state: GameState, ix: number, iy: number, color: BlockColor
     color,
     state: "idle",
     timer: 0,
+    star: false,
   };
   state.blocks.push(block);
   return block;
@@ -655,11 +744,20 @@ function createBlockRow(state: GameState) {
       createBlock(state, i, row, randomBlockColor());
     }
   }
+  if (row % 6 === 5) {
+    const ix = Math.floor(Math.random() * GRID_WIDTH * 2);
+    const block = state.blocks.at(-ix);
+    if (block) {
+      block.star = true;
+    }
+  }
 }
 
 function randomBlockColor(): BlockColor {
   return blockColors[Math.floor(Math.random() * (3))];
 }
+
+// #endregion state
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -771,6 +869,9 @@ export function App() {
         createBlockRow(state);
       }
 
+      // sort blocks by y position descending
+      state.blocks.sort((a, b) => b.pos.iy - a.pos.iy);
+
       if (controller.up > 0) controller.up += 1;
       if (controller.down > 0) controller.down += 1;
       if (controller.left > 0) controller.left += 1;
@@ -864,7 +965,7 @@ export function App() {
       // Draw blocks
       for (const block of state.blocks) {
         const colorStr = blockColorString(block.color);
-        let blockSize = BLOCK_SIZE;
+        const visualRect = blockVisualRectangle(block);
         const blockStyle: Options = {
           seed,
           fill: colorStr,
@@ -874,9 +975,6 @@ export function App() {
           stroke: colorStr
         };
         if (block.state === "lifted") {
-          blockSize *= 0.5;
-        }
-        if (block.state === "idle") {
           blockStyle.fillStyle = "hachure";
           blockStyle.fillWeight = 1;
           blockStyle.hachureGap = 4;
@@ -886,30 +984,43 @@ export function App() {
           blockStyle.fillWeight = 2;
           blockStyle.hachureGap = 6;
           blockStyle.stroke = "none";
+        } else if (block.state === "thrown") {
+          blockStyle.fillStyle = "hachure";
+          blockStyle.fillWeight = 1;
+          blockStyle.hachureGap = 4;
+        } else if (block.state === "idle") {
+          blockStyle.seed = 1;
+          blockStyle.fillStyle = "hachure";
+          blockStyle.fillWeight = 1;
+          blockStyle.hachureGap = 4;
         }
-        rctx.rectangle(block.pos.x - blockSize / 2, block.pos.y - blockSize, blockSize, blockSize, blockStyle);
+        rctx.rectangle(visualRect.x, visualRect.y, visualRect.width, visualRect.height, blockStyle);
+        if (block.star) {
+          drawStar(rctx, visualRect.x + visualRect.width / 2, visualRect.y + visualRect.height / 2, visualRect.width / 5, visualRect.height / 3, 5, { seed, fill: "#FFEFb0", fillStyle: "solid", stroke: "#FFD700", strokeWidth: 3, roughness: 1 });
+        }
       }
 
       drawCapsule(rctx, state.player.pos.x - state.player.width / 2, state.player.pos.y - state.player.height, state.player.width, state.player.height, { seed, fill: "#C058F8", fillWeight: 5, hachureGap: 6, stroke: "#8131AC", strokeWidth: 3, roughness: 1 })
 
-      // draw collision rectangles
-      for (const block of state.blocks) {
-        const blockRect = blockRectangle(block);
-        ctx.beginPath();
-        ctx.rect(blockRect.x, blockRect.y, blockRect.width, blockRect.height);
-        ctx.strokeStyle = "#0f0";
-        ctx.stroke();
-        ctx.fillText(`${block.state} (${block.pos.ix}, ${block.pos.iy})`, blockRect.x, blockRect.y);
-      }
+      if (state.debug) {
+        // draw collision rectangles
+        for (const block of state.blocks) {
+          const blockRect = blockRectangle(block);
+          ctx.beginPath();
+          ctx.rect(blockRect.x, blockRect.y, blockRect.width, blockRect.height);
+          ctx.strokeStyle = "#0f0";
+          ctx.stroke();
+          ctx.fillText(`${block.state} (${block.pos.ix}, ${block.pos.iy})`, blockRect.x, blockRect.y);
+        }
 
-      {
-        ctx.beginPath();
-        const playerRect = playerRectangle(state.player);
-        ctx.rect(playerRect.x, playerRect.y, playerRect.width, playerRect.height);
-        ctx.strokeStyle = "#00f";
-        ctx.stroke();
+        {
+          ctx.beginPath();
+          const playerRect = playerRectangle(state.player);
+          ctx.rect(playerRect.x, playerRect.y, playerRect.width, playerRect.height);
+          ctx.strokeStyle = "#00f";
+          ctx.stroke();
+        }
       }
-
       ctx.restore();
       // UI viewport
 
@@ -969,8 +1080,8 @@ function drawStar(rctx: RoughCanvas, x: number, y: number, innerRadius: number, 
   const points: Point[] = [];
   for (let i = 0; i < pointCount; i++) {
     const angle = i * radiansPerPoint;
-    points.push([x + Math.cos(angle - radiansPerPoint / 2) * innerRadius, y + Math.sin(angle - radiansPerPoint / 2) * innerRadius]);
-    points.push([x + Math.cos(angle) * outerRadius, y + Math.sin(angle) * outerRadius]);
+    points.push([x + Math.sin(angle - radiansPerPoint / 2) * innerRadius, y - Math.cos(angle - radiansPerPoint / 2) * innerRadius]);
+    points.push([x + Math.sin(angle) * outerRadius, y - Math.cos(angle) * outerRadius]);
   }
   rctx.polygon(points, options);
 }
