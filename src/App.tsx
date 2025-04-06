@@ -11,7 +11,11 @@ const GRID_WIDTH = 8;
 const MAX_BLOCKS = 4;
 const SOLVE_TIME = 30;
 const FALL_SPEED = 5;
+const FLOAT_SPEED = 8;
 const BLOCK_ROW_BUFFER = 20;
+const JUMP_TIME = 30;
+const WALLJUMP_TIME = 30;
+const FLOATING_TIME = 30;
 
 interface Controller {
   up: number;
@@ -28,6 +32,15 @@ interface Position {
   ix: number;
   iy: number;
 }
+
+interface Rectangle {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+// #region blocks
 
 const blockColors = ["red", "green", "blue", "yellow"] as const;
 type BlockColor = typeof blockColors[number];
@@ -63,29 +76,53 @@ function blocksMatch(block1: Block, block2: Block): boolean {
   return block1.color === block2.color;
 }
 
+function blockRectangle(block: Block): Rectangle {
+  return {
+    x: block.pos.x - BLOCK_SIZE * 0.5,
+    y: block.pos.y - BLOCK_SIZE,
+    width: BLOCK_SIZE,
+    height: BLOCK_SIZE
+  };
+}
+
 function blockMoveAndCollide(state: GameState, block: Block, movementX: number, movementY: number) {
-  const pickPos = clonePosition(block.pos);
-  let x = movementX;
-  let y = movementY;
-  if (movementX < 0) {
-    x -= BLOCK_SIZE * 0.5;
+  const myRect = blockRectangle(block);
+  myRect.x += movementX;
+  myRect.y += movementY;
+  
+  for (const otherBlock of state.blocks) {
+    if (!blockIsPickable(otherBlock)) {
+      continue;
+    }
+    if (block.id === otherBlock.id) {
+      continue;
+    }
+    const blockRect = blockRectangle(otherBlock);
+    let nudgeX = 0;
+    let nudgeY = 0;
+
+    if (checkAABB(myRect, blockRect)) {
+      if (movementX < 0 && blockRect.x + blockRect.width > myRect.x) {
+        nudgeX = -(myRect.x - (blockRect.x + blockRect.width)) + movementX;
+      }
+      if (movementX > 0 && blockRect.x < myRect.x + myRect.width) {
+        nudgeX = -(myRect.x + myRect.width - blockRect.x) + movementX;
+      }
+      if (movementY < 0 && blockRect.y + blockRect.height > myRect.y) {
+        nudgeY = -(myRect.y - (blockRect.y + blockRect.height)) + movementY;
+      }
+      if (movementY > 0 && blockRect.y < myRect.y + myRect.height) {
+        nudgeY = -(myRect.y + myRect.height - blockRect.y) + movementY;
+      }
+      addPosition(nudgeX, nudgeY, block.pos);
+      return false;
+    }
   }
-  if (movementX > 0) {
-    x += BLOCK_SIZE * 0.5;
-  }
-  if (movementY < 0) {
-    y -= BLOCK_SIZE;
-  }
-  if (movementY === 0) {
-    y -= BLOCK_SIZE * 0.5;
-  }
-  addPosition(x, y, pickPos);
-  const pickedBlock = pickBlock(state, pickPos);
-  if (!pickedBlock || (pickedBlock !== true && pickedBlock.id === block.id)) {
-    addPosition(movementX, movementY, block.pos);
-    return true;
-  }
-  return false;
+
+  // no collision, move block to new position
+  addPosition(movementX, movementY, block.pos);
+
+  return true;
 }
 
 function blockUpdate(state: GameState, block: Block) {
@@ -190,6 +227,7 @@ function checkSolutions(state: GameState) {
   solvedBlocks.forEach(block => blockSetState(block, "solving"));
 }
 
+
 interface Block {
   id: number;
   pos: Position;
@@ -198,7 +236,11 @@ interface Block {
   timer: number;
 }
 
-const playerStates = ["ground", "jumping", "falling", "wallride", "walljumping"] as const;
+// #endregion block
+
+// #region player
+
+const playerStates = ["ground", "jumping", "falling", "wallride", "walljumping", "floating"] as const;
 type PlayerState = typeof playerStates[number];
 
 function clonePosition(pos: Position): Position {
@@ -224,39 +266,84 @@ function setPosition(x: number, y: number, pos: Position) {
   pos.iy = Math.floor(pos.y / BLOCK_SIZE);
 }
 
-function playerMoveAndCollide(state: GameState, pos: Position, width: number, height: number, movementX: number, movementY: number) {
-  const pickPos = clonePosition(pos);
-  let x = movementX;
-  let y = movementY;
-  if (movementX < 0) {
-    x -= width * 0.5;
+function checkAABB(rect1: Rectangle, rect2: Rectangle): boolean {
+  return rect1.x < rect2.x + rect2.width &&
+    rect1.x + rect1.width > rect2.x &&
+    rect1.y < rect2.y + rect2.height &&
+    rect1.y + rect1.height > rect2.y;
+}
+
+function playerRectangle(player: Player): Rectangle {
+  return {
+    x: player.pos.x - player.width * 0.5,
+    y: player.pos.y - BLOCK_SIZE * 0.9,
+    width: player.width,
+    height: BLOCK_SIZE * 0.9
+  };
+}
+
+function collideBlock(state: GameState, rect: Rectangle): Block | null {
+  return state.blocks.find(block => checkAABB(blockRectangle(block), rect)) || null;
+}
+
+function playerMoveAndCollide(state: GameState, player: Player, movementX: number, movementY: number) {
+  const playerRect = playerRectangle(player);
+  playerRect.x += movementX;
+  playerRect.y += movementY;
+
+  if (playerRect.x < 0) {
+    addPosition(movementX - playerRect.x, 0, player.pos);
+    return false;
   }
-  if (movementX > 0) {
-    x += width * 0.5;
+  if (playerRect.x + playerRect.width > GRID_WIDTH * BLOCK_SIZE) {
+    addPosition(movementX + (GRID_WIDTH * BLOCK_SIZE - (playerRect.x + playerRect.width)), 0, player.pos);
+    return false;
   }
-  if (movementY < 0) {
-    y -= BLOCK_SIZE;
+
+  for (const block of state.blocks) {
+    if (!blockIsPickable(block)) {
+      continue;
+    }
+    const blockRect = blockRectangle(block);
+    let nudgeX = 0;
+    let nudgeY = 0;
+
+    if (checkAABB(playerRect, blockRect)) {
+      if (movementX < 0 && blockRect.x + blockRect.width > playerRect.x) {
+        nudgeX = -(playerRect.x - (blockRect.x + blockRect.width)) + movementX;
+      }
+      if (movementX > 0 && blockRect.x < playerRect.x + playerRect.width) {
+        nudgeX = -(playerRect.x + playerRect.width - blockRect.x) + movementX;
+      }
+      if (movementY < 0 && blockRect.y + blockRect.height > playerRect.y) {
+        nudgeY = -(playerRect.y - (blockRect.y + blockRect.height)) + movementY;
+      }
+      if (movementY > 0 && blockRect.y < playerRect.y + playerRect.height) {
+        nudgeY = -(playerRect.y + playerRect.height - blockRect.y) + movementY;
+      }
+      addPosition(nudgeX, nudgeY, player.pos);
+      return false;
+    }
   }
-  if (movementY === 0) {
-    y -= BLOCK_SIZE * 0.5;
-  }
-  addPosition(x, y, pickPos);
-  if (!pickBlock(state, pickPos)) {
-    addPosition(movementX, movementY, pos);
-    return true;
-  }
-  return false;
+
+  // no collision, move player to new position
+  addPosition(movementX, movementY, player.pos);
+
+  return true;
 }
 
 function onGround(state: GameState, player: Player) {
-  const pickPos = clonePosition(player.pos);
-  addPosition(player.width * -0.25, 3, pickPos);
-  let block = pickBlock(state, pickPos);
+  const pickRect = {
+    x: player.pos.x - player.width * 0.5,
+    y: player.pos.y,
+    width: player.width,
+    height: BLOCK_SIZE * 0.25
+  }
+  const block = state.blocks.find(block => checkAABB(pickRect, blockRectangle(block)));
   if (block) {
     return block;
   }
-  addPosition(player.width * 0.5, 0, pickPos);
-  return pickBlock(state, pickPos);
+  return null;
 }
 
 function playerUpdate(state: GameState, player: Player, controller: Controller) {
@@ -271,14 +358,19 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
         movementX += player.speed;
       }
 
+      if (playerMoveAndCollide(state, player, 0, FALL_SPEED)) {
+        playerSetState(player, "falling");
+        break;
+      }
+
       const groundBlock = onGround(state, player);
 
-      if (controller.a === 1 && player.blocks.length < MAX_BLOCKS && groundBlock && groundBlock !== true) {
+      if (controller.a === 1 && player.blocks.length < MAX_BLOCKS && groundBlock) {
         blockSetState(groundBlock, "lifted");
         player.blocks.push(groundBlock);
       }
 
-      playerMoveAndCollide(state, player.pos, player.width, player.height, movementX, 0);
+      playerMoveAndCollide(state, player, movementX, 0);
 
       if (controller.up === 1) {
         playerSetState(player, "jumping");
@@ -300,19 +392,25 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
         movementX += player.speed;
       }
 
+      const inBlock = collideBlock(state, playerRectangle(player));
+      if (inBlock && inBlock.state === "falling") {
+        playerSetState(player, "floating");
+        return;
+      }
+
       if (controller.b === 1) {
         const block = player.blocks.shift();
         if (block) {
           setPosition((Math.floor(player.pos.x / BLOCK_SIZE) + 0.5) * BLOCK_SIZE, player.pos.y, block.pos);
           blockSetState(block, "falling");
-          playerSetState(player, "jumping");
+          playerSetState(player, "floating");
           return;
         }
       }
 
-      playerMoveAndCollide(state, player.pos, player.width, player.height, movementX, 0);
+      playerMoveAndCollide(state, player, movementX, 0);
 
-      if (!playerMoveAndCollide(state, player.pos, player.width, player.height, 0, -5 * (player.jumpTime / 30))) {
+      if (!playerMoveAndCollide(state, player, 0, -5 * (player.jumpTime / 30))) {
         playerSetState(player, "falling");
       }
       if (player.jumpTime > 0) {
@@ -325,6 +423,12 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
     // #endregion jumping
     // #region falling
     case "falling": {
+      const inBlock = collideBlock(state, playerRectangle(player));
+      if (inBlock && inBlock.state === "falling") {
+        playerSetState(player, "floating");
+        return;
+      }
+
       let movementX = 0;
       if (controller.left > 0) {
         movementX -= player.speed;
@@ -353,17 +457,15 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
       if (controller.down > 0) {
         fallMultiplier = 2;
       }
+      if (!playerMoveAndCollide(state, player, 0, FALL_SPEED * fallMultiplier)) {
+        playerSetState(player, "ground");
+        return;
+      }
 
-      if (!playerMoveAndCollide(state, player.pos, player.width, player.height, movementX, 0)) {
+      if (!playerMoveAndCollide(state, player, movementX, 0)) {
         player.wallriding = movementX;
         playerSetState(player, "wallride");
         return;
-      }
-      if (!playerMoveAndCollide(state, player.pos, player.width, player.height, 0, FALL_SPEED * fallMultiplier)) {
-        playerSetState(player, "ground");
-      }
-      if (onGround(state, player)) {
-        playerSetState(player, "ground");
       }
       break;
     }
@@ -392,11 +494,11 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
         playerSetState(player, "walljumping");
         return;
       }
-      if (!playerMoveAndCollide(state, player.pos, player.width, player.height, 0, 1)) {
+      if (!playerMoveAndCollide(state, player, 0, 1)) {
         playerSetState(player, "ground");
         return;
       }
-      if (playerMoveAndCollide(state, player.pos, player.width, player.height, player.wallriding || 0, 0)) {
+      if (playerMoveAndCollide(state, player, player.wallriding || 0, 0)) {
         playerSetState(player, "falling");
       }
       break;
@@ -404,12 +506,12 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
     // #endregion wallride
     // #region walljumping
     case "walljumping": {
-      if (!playerMoveAndCollide(state, player.pos, player.width, player.height, player.wallriding || 0, 0)) {
+      if (!playerMoveAndCollide(state, player, player.wallriding || 0, 0)) {
         player.wallriding = -(player.wallriding || 0);
         playerSetState(player, "wallride");
         return;
       }
-      if (!playerMoveAndCollide(state, player.pos, player.width, player.height, 0, -4 * (player.jumpTime / 30))) {
+      if (!playerMoveAndCollide(state, player, 0, -4 * (player.jumpTime / 30))) {
         playerSetState(player, "falling");
         return;
       }
@@ -421,6 +523,21 @@ function playerUpdate(state: GameState, player: Player, controller: Controller) 
       break;
     }
     // #endregion walljumping
+    // #region floating
+    case "floating": {
+      const inBlock = collideBlock(state, playerRectangle(player));
+      if (!inBlock) {
+        playerSetState(player, "jumping");
+        return;
+      }
+
+      if (inBlock) {
+        // move upward
+        addPosition(0, -FLOAT_SPEED, player.pos);
+      }
+      break;
+    }
+    // #endregion floating
   }
 }
 
@@ -443,13 +560,15 @@ function playerSetState(player: Player, state: PlayerState) {
   player.state = state;
   switch (state) {
     case "ground":
-      setPosition(player.pos.x, Math.floor((player.pos.y + 3) / BLOCK_SIZE) * BLOCK_SIZE, player.pos);
       break;
     case "jumping":
-      player.jumpTime = 30;
+      player.jumpTime = JUMP_TIME;
       break;
     case "walljumping":
-      player.jumpTime = 30;
+      player.jumpTime = WALLJUMP_TIME;
+      break;
+    case "floating":
+      player.jumpTime = FLOATING_TIME;
       break;
   }
 }
@@ -517,7 +636,7 @@ function createBlock(state: GameState, ix: number, iy: number, color: BlockColor
     id,
     pos: {
       x: (ix + 0.5) * BLOCK_SIZE,
-      y: (iy + 1.0) * BLOCK_SIZE,
+      y: iy * BLOCK_SIZE,
       ix,
       iy,
     },
@@ -772,6 +891,24 @@ export function App() {
       }
 
       drawCapsule(rctx, state.player.pos.x - state.player.width / 2, state.player.pos.y - state.player.height, state.player.width, state.player.height, { seed, fill: "#C058F8", fillWeight: 5, hachureGap: 6, stroke: "#8131AC", strokeWidth: 3, roughness: 1 })
+
+      // draw collision rectangles
+      for (const block of state.blocks) {
+        const blockRect = blockRectangle(block);
+        ctx.beginPath();
+        ctx.rect(blockRect.x, blockRect.y, blockRect.width, blockRect.height);
+        ctx.strokeStyle = "#0f0";
+        ctx.stroke();
+        ctx.fillText(`${block.state} (${block.pos.ix}, ${block.pos.iy})`, blockRect.x, blockRect.y);
+      }
+
+      {
+        ctx.beginPath();
+        const playerRect = playerRectangle(state.player);
+        ctx.rect(playerRect.x, playerRect.y, playerRect.width, playerRect.height);
+        ctx.strokeStyle = "#00f";
+        ctx.stroke();
+      }
 
       ctx.restore();
       // UI viewport
