@@ -297,7 +297,21 @@ function checkSolutions(state: GameState) {
       }
     }
   }
-  solvedBlocks.forEach(block => blockSetState(block, "solving"));
+
+  for (const block of solvedBlocks) {
+    blockSetState(block, "solving");
+    // get all the blocks that are above this block
+    // and set their state to "ground"
+    for (let j = (block.pos.iy - minY) - 1; j >= 0; j--) {
+      const aboveBlock = blockmap[j * GRID_WIDTH + block.pos.ix];
+      if (!aboveBlock) {
+        break;
+      }
+      if (aboveBlock.state === "idle") {
+        blockSetState(aboveBlock, "ground");
+      }
+    }
+  }
 }
 
 // #endregion block
