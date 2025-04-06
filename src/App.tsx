@@ -9,7 +9,7 @@ const SCREEN_HEIGHT = 720;
 const BLOCK_SIZE = 64;
 const GRID_WIDTH = 8;
 const MAX_BLOCKS = 4;
-const SOLVE_TIME = 30;
+const SOLVE_TIME = 50;
 const FALL_SPEED = 5;
 const FLOAT_SPEED = 8;
 const BLOCK_ROW_BUFFER = 20;
@@ -302,15 +302,15 @@ function checkSolutions(state: GameState) {
     blockSetState(block, "solving");
     // get all the blocks that are above this block
     // and set their state to "ground"
-    for (let j = (block.pos.iy - minY) - 1; j >= 0; j--) {
-      const aboveBlock = blockmap[j * GRID_WIDTH + block.pos.ix];
-      if (!aboveBlock) {
-        break;
-      }
-      if (aboveBlock.state === "idle") {
-        blockSetState(aboveBlock, "ground");
-      }
-    }
+    // for (let j = (block.pos.iy - minY) - 1; j >= 0; j--) {
+    //   const aboveBlock = blockmap[j * GRID_WIDTH + block.pos.ix];
+    //   if (!aboveBlock) {
+    //     break;
+    //   }
+    //   if (aboveBlock.state === "idle") {
+    //     blockSetState(aboveBlock, "ground");
+    //   }
+    // }
   }
 }
 
@@ -899,7 +899,8 @@ function drawPlaying(ctx: CanvasRenderingContext2D, rctx: RoughCanvas, state: Ga
     if (block.state === "solving") {
       blockStyle.fillStyle = "dots";
       blockStyle.fillWeight = 2;
-      blockStyle.hachureGap = 6;
+      blockStyle.hachureGap = lerp(6, 12, block.timer / SOLVE_TIME);
+      blockStyle.strokeWidth = 1;
       blockStyle.stroke = "none";
     } else if (block.state === "thrown") {
       blockStyle.fillStyle = "hachure";
